@@ -29,7 +29,8 @@ use.
 - Windows, Linux, or macOS. On Windows, the current user's Downloads folder is
   detected automatically.
 
-No packages need to be installed.
+No packages need to be installed. `requirements.txt` is included for tooling and
+contains no external dependencies.
 
 ## Quick Start
 
@@ -75,27 +76,28 @@ URL slug when available. If the URL has no slug, the script tries to use the
 thread subject or opening post text. If names collide, the board and thread ID
 are added to keep the folders separate.
 
-## Options
+## Configuration
 
-Show help:
+Configuration is done inside `4chan_downloader.py`, near the top of the file, in
+the `CONFIGURATION` section.
 
-```powershell
-python .\4chan_downloader.py --help
+Common settings:
+
+```python
+DOWNLOADS_DIR = ""
+CHECK_INTERVAL_SECONDS = 300.0
+DOWNLOAD_THROTTLE_SECONDS = 0.5
+ENABLE_COLORS = True
+ENABLE_DASHBOARD = True
+PROGRESS_BAR_WIDTH = 24
 ```
 
-Main options:
+Examples:
 
-```text
---refresh-time  Interval between checks, in seconds. Default: 300.
---throttle      Pause between downloads from the same thread. Default: 0.5.
---downloads-dir Alternate base folder for saved files.
---no-color      Disable colored console output.
-```
-
-Example with a custom output folder:
-
-```powershell
-python .\4chan_downloader.py --downloads-dir "D:\4chan"
+```python
+DOWNLOADS_DIR = "D:\\4chan"
+CHECK_INTERVAL_SECONDS = 600.0
+ENABLE_COLORS = False
 ```
 
 ## State Tracking

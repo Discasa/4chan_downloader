@@ -52,7 +52,25 @@ in place and throttles progress refreshes during fast download loops.
 Color output is disabled when:
 
 - The `NO_COLOR` environment variable is set.
-- The user runs the script with `--no-color`.
+- `ENABLE_COLORS = False` in the script configuration section.
+
+## Configuration
+
+The script does not use command-line flags for runtime settings. Editable tokens
+live near the top of `4chan_downloader.py` in the `CONFIGURATION` section.
+
+Important tokens:
+
+- `DOWNLOADS_DIR`: output root. Leave empty for the current user's Downloads
+  folder with fallback to the script folder.
+- `CHECK_INTERVAL_SECONDS`: delay between thread checks.
+- `DOWNLOAD_THROTTLE_SECONDS`: delay between downloads from the same thread.
+- `ENABLE_COLORS`: enable or disable color output.
+- `ENABLE_DASHBOARD`: enable or disable the Windows dashboard renderer.
+- `PROGRESS_BAR_WIDTH`: width of each progress bar.
+- `DASHBOARD_MIN_RENDER_INTERVAL_SECONDS`: redraw throttle used to avoid flicker.
+- `THREAD_API_URL_TEMPLATE`, `MEDIA_URL_TEMPLATE`, and `THREAD_PAGE_URL_TEMPLATE`:
+  URL templates used for API, media, and normalized thread links.
 
 ## Folder Names
 
@@ -102,5 +120,4 @@ Run:
 
 ```powershell
 python -m py_compile 4chan_downloader.py
-python .\4chan_downloader.py --help
 ```

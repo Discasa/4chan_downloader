@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import argparse
 import html
 import json
 import os
@@ -16,26 +15,52 @@ from datetime import datetime
 from pathlib import Path
 
 
-USER_AGENT = (
+# =============================================================================
+# CONFIGURATION
+# Edit the values in this section to customize the script.
+# =============================================================================
+
+APP_VERSION = "1.6.0"
+
+# Leave empty to use the current user's Downloads folder. If that folder does
+# not exist, the script falls back to the folder containing this script.
+DOWNLOADS_DIR = ""
+
+CHECK_INTERVAL_SECONDS = 300.0
+DOWNLOAD_THROTTLE_SECONDS = 0.5
+HTTP_TIMEOUT_SECONDS = 30
+MEDIA_TIMEOUT_SECONDS = 90
+RATE_LIMIT_BACKOFF_SECONDS = 30.0
+MAX_RATE_LIMIT_BACKOFF_SECONDS = 300.0
+
+ENABLE_COLORS = True
+ENABLE_DASHBOARD = True
+PROGRESS_BAR_WIDTH = 24
+DASHBOARD_MIN_RENDER_INTERVAL_SECONDS = 0.15
+
+APP_TITLE = "Interactive 4chan downloader"
+INPUT_PROMPT = "Paste URL> "
+THREADS_HEADER = "Threads"
+NO_THREADS_TEXT = "No threads are being watched."
+
+USER_AGENT_TOKEN = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0 Safari/537.36"
 )
-THREAD_API_TEMPLATE = "https://a.4cdn.org/{board}/thread/{thread_id}.json"
-MEDIA_URL_TEMPLATE = "https://i.4cdn.org/{board}/{tim}{ext}"
-INVALID_WINDOWS_CHARS = r'<>:"/\|?*'
-LEGACY_METADATA_FILES = (".downloaded.json", ".thread_info.json")
-RESERVED_WINDOWS_NAMES = {
-    "CON",
-    "PRN",
-    "AUX",
-    "NUL",
-    *(f"COM{i}" for i in range(1, 10)),
-    *(f"LPT{i}" for i in range(1, 10)),
-}
 
-ANSI_ENABLED = False
-COLOR_ENABLED = False
+THREAD_API_URL_TEMPLATE = "https://a.4cdn.org/{board}/thread/{thread_id}.json"
+MEDIA_URL_TEMPLATE = "https://i.4cdn.org/{board}/{tim}{ext}"
+THREAD_PAGE_URL_TEMPLATE = "https://boards.4chan.org/{board}/thread/{thread_id}"
+ALLOWED_THREAD_HOSTS = ("4chan.org", "4channel.org")
+
+WINDOWS_DOWNLOADS_FOLDER_GUID = "{374DE290-123F-4565-9164-39C4925E467B}"
+WINDOWS_INVALID_FILENAME_CHARS = r'<>:"/\|?*'
+MAX_FOLDER_NAME_LENGTH = 140
+MAX_FILE_STEM_LENGTH = 180
+LEGACY_METADATA_FILES = (".downloaded.json", ".thread_info.json")
+EXIT_INPUTS = {"exit", "quit", "q"}
+
 COLOR_CODES = {
     "reset": "\033[0m",
     "bold": "\033[1m",
@@ -48,6 +73,39 @@ COLOR_CODES = {
     "cyan": "\033[36m",
     "gray": "\033[90m",
 }
+
+STATUS_COLORS = {
+    "downloading": "green",
+    "checking": "cyan",
+    "waiting": "yellow",
+    "queued": "yellow",
+    "stopped": "gray",
+    "error": "red",
+}
+
+NOTICE_COLORS = {
+    "error": "red",
+    "warning": "yellow",
+    "success": "green",
+    "muted": "gray",
+}
+
+
+# =============================================================================
+# INTERNALS
+# =============================================================================
+
+RESERVED_WINDOWS_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+ANSI_ENABLED = False
+COLOR_ENABLED = False
 
 
 @dataclass(frozen=True)
@@ -87,10 +145,10 @@ def enable_ansi_console() -> bool:
         return False
 
 
-def configure_colors(disabled: bool) -> None:
+def configure_colors() -> None:
     global ANSI_ENABLED, COLOR_ENABLED
     ANSI_ENABLED = enable_ansi_console()
-    COLOR_ENABLED = ANSI_ENABLED and not disabled and not os.environ.get("NO_COLOR")
+    COLOR_ENABLED = ANSI_ENABLED and ENABLE_COLORS and not os.environ.get("NO_COLOR")
 
 
 def colorize(text: str, *styles: str) -> str:
@@ -102,7 +160,7 @@ def colorize(text: str, *styles: str) -> str:
     return f"{prefix}{text}{COLOR_CODES['reset']}"
 
 
-def progress_bar(done: int, total: int, width: int = 24) -> str:
+def progress_bar(done: int, total: int, width: int = PROGRESS_BAR_WIDTH) -> str:
     if total <= 0:
         filled = 0
     else:
@@ -143,10 +201,10 @@ class ConsoleUI:
         self.notice = ""
         self.notice_status = "muted"
         self.lock = threading.Lock()
-        self.dashboard_enabled = ANSI_ENABLED and sys.stdout.isatty() and os.name == "nt"
+        self.dashboard_enabled = ENABLE_DASHBOARD and ANSI_ENABLED and sys.stdout.isatty() and os.name == "nt"
         self.rendered_line_count = 0
         self.last_render_at = 0.0
-        self.min_render_interval = 0.15
+        self.min_render_interval = DASHBOARD_MIN_RENDER_INTERVAL_SECONDS
         self.has_rendered = False
 
     def set_input(self, value: str) -> None:
@@ -182,7 +240,7 @@ class ConsoleUI:
                 self.render_locked(force=True)
             return
 
-        print(colorize("Interactive 4chan downloader", "bold", "green"))
+        print(colorize(APP_TITLE, "bold", "green"))
         print(f"{colorize('Base folder:', 'cyan')} {self.downloads_root}")
         print(f"{colorize('Check interval:', 'cyan')} {int(self.refresh_time)} seconds")
         print("Paste a thread URL and press Enter.")
@@ -198,7 +256,7 @@ class ConsoleUI:
         with self.lock:
             width = shutil.get_terminal_size((100, 30)).columns
             if not self.order:
-                print("No threads are being watched.")
+                print(NO_THREADS_TEXT)
                 return
             for key in self.order:
                 for line in self.format_thread_lines(self.statuses[key], width):
@@ -212,27 +270,23 @@ class ConsoleUI:
 
         width = shutil.get_terminal_size((100, 30)).columns
         lines = [
-            colorize("Interactive 4chan downloader", "bold", "green"),
+            colorize(APP_TITLE, "bold", "green"),
             f"{colorize('Base folder:', 'cyan')} {self.downloads_root}",
             f"{colorize('Check interval:', 'cyan')} {int(self.refresh_time)} seconds",
         ]
         if self.notice:
-            notice_color = {
-                "error": "red",
-                "warning": "yellow",
-                "success": "green",
-            }.get(self.notice_status, "gray")
+            notice_color = NOTICE_COLORS.get(self.notice_status, "gray")
             lines.append(colorize(self.notice, notice_color))
-        lines.extend(["", colorize("Threads", "bold", "cyan")])
+        lines.extend(["", colorize(THREADS_HEADER, "bold", "cyan")])
 
         if not self.order:
-            lines.append(colorize("No threads are being watched.", "gray"))
+            lines.append(colorize(NO_THREADS_TEXT, "gray"))
         else:
             for key in self.order:
                 progress = self.statuses[key]
                 lines.extend(self.format_thread_lines(progress, width))
 
-        lines.extend(["", colorize("Paste URL> ", "bold", "cyan") + self.input_buffer])
+        lines.extend(["", colorize(INPUT_PROMPT, "bold", "cyan") + self.input_buffer])
         clear_lines = max(self.rendered_line_count, len(lines))
         output = ["\033[H"] if self.has_rendered else ["\033[2J\033[H"]
         for index in range(clear_lines):
@@ -249,14 +303,7 @@ class ConsoleUI:
     def format_thread_lines(self, progress: ThreadProgress, width: int) -> list[str]:
         bar = progress_bar(progress.downloaded, progress.total)
         count = f"{progress.downloaded}/{progress.total}" if progress.total else "0/0"
-        status_color = {
-            "downloading": "green",
-            "checking": "cyan",
-            "waiting": "yellow",
-            "queued": "yellow",
-            "stopped": "gray",
-            "error": "red",
-        }.get(progress.status, "cyan")
+        status_color = STATUS_COLORS.get(progress.status, "cyan")
         title = progress.title or progress.key
         header_prefix = f"{progress.key}  "
         header_budget = max(width - len(header_prefix), 10)
@@ -280,10 +327,9 @@ def get_windows_downloads_folder() -> Path:
         try:
             import winreg
 
-            guid = "{374DE290-123F-4565-9164-39C4925E467B}"
             key_path = r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
-                for value_name in (guid, "Downloads"):
+                for value_name in (WINDOWS_DOWNLOADS_FOLDER_GUID, "Downloads"):
                     try:
                         value, _ = winreg.QueryValueEx(key, value_name)
                         return Path(os.path.expandvars(value))
@@ -301,6 +347,8 @@ def get_windows_downloads_folder() -> Path:
 
 
 def get_default_output_folder() -> Path:
+    if DOWNLOADS_DIR:
+        return Path(os.path.expandvars(DOWNLOADS_DIR)).expanduser()
     downloads_folder = get_windows_downloads_folder()
     if downloads_folder.is_dir():
         return downloads_folder
@@ -322,11 +370,11 @@ def clean_display_title(value: str, fallback: str) -> str:
     return value or fallback
 
 
-def sanitize_windows_name(value: str, fallback: str, max_length: int = 140) -> str:
+def sanitize_windows_name(value: str, fallback: str, max_length: int = MAX_FOLDER_NAME_LENGTH) -> str:
     value = urllib.parse.unquote(value or "")
     value = html.unescape(value)
     value = re.sub(r"[\x00-\x1f]+", " ", value)
-    translation = str.maketrans({char: "_" for char in INVALID_WINDOWS_CHARS})
+    translation = str.maketrans({char: "_" for char in WINDOWS_INVALID_FILENAME_CHARS})
     value = value.translate(translation)
     value = re.sub(r"\s+", " ", value).strip(" .")
     value = re.sub(r"_+", "_", value)
@@ -348,7 +396,7 @@ def sanitize_file_name(stem: str, ext: str, fallback: str) -> str:
     if safe_ext and not safe_ext.startswith("."):
         safe_ext = f".{safe_ext}"
 
-    safe_stem = sanitize_windows_name(stem, fallback=fallback, max_length=180 - len(safe_ext))
+    safe_stem = sanitize_windows_name(stem, fallback=fallback, max_length=MAX_FILE_STEM_LENGTH - len(safe_ext))
     return f"{safe_stem}{safe_ext}"
 
 
@@ -384,10 +432,10 @@ def parse_thread_url(raw_url: str) -> ThreadRef:
         raise ValueError("Invalid board in URL.")
     if not re.match(r"^\d+$", thread_id):
         raise ValueError("Invalid thread ID in URL.")
-    if "4chan.org" not in host and "4channel.org" not in host:
+    if not any(allowed_host in host for allowed_host in ALLOWED_THREAD_HOSTS):
         raise ValueError("Use a boards.4chan.org or boards.4channel.org URL.")
 
-    normalized = f"https://boards.4chan.org/{board}/thread/{thread_id}"
+    normalized = THREAD_PAGE_URL_TEMPLATE.format(board=board, thread_id=thread_id)
     if slug:
         normalized += "/" + urllib.parse.quote(slug)
 
@@ -398,11 +446,11 @@ def request_json(url: str) -> dict:
     request = urllib.request.Request(
         url,
         headers={
-            "User-Agent": USER_AGENT,
+            "User-Agent": USER_AGENT_TOKEN,
             "Accept": "application/json,text/plain,*/*",
         },
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -410,13 +458,13 @@ def request_bytes(url: str, referer: str) -> bytes:
     request = urllib.request.Request(
         url,
         headers={
-            "User-Agent": USER_AGENT,
+            "User-Agent": USER_AGENT_TOKEN,
             "Accept": "*/*",
             "Referer": referer,
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=90) as response:
+        with urllib.request.urlopen(request, timeout=MEDIA_TIMEOUT_SECONDS) as response:
             return response.read()
     except urllib.error.HTTPError as exc:
         if exc.code == 429:
@@ -525,7 +573,7 @@ class ThreadWatcher:
                     self.manager.ui.message(self.ref.key, "thread unavailable or archived", "stopped")
                     break
                 if exc.code == 429:
-                    backoff = min(backoff + 30.0, 300.0)
+                    backoff = min(backoff + RATE_LIMIT_BACKOFF_SECONDS, MAX_RATE_LIMIT_BACKOFF_SECONDS)
                     self.manager.ui.message(
                         self.ref.key,
                         f"rate limited, retrying in {int(backoff)}s",
@@ -538,7 +586,7 @@ class ThreadWatcher:
                         "waiting",
                     )
             except RateLimited:
-                backoff = min(backoff + 30.0, 300.0)
+                backoff = min(backoff + RATE_LIMIT_BACKOFF_SECONDS, MAX_RATE_LIMIT_BACKOFF_SECONDS)
                 self.manager.ui.message(
                     self.ref.key,
                     f"rate limited while downloading, retrying in {int(backoff)}s",
@@ -557,7 +605,7 @@ class ThreadWatcher:
         self.manager.mark_stopped(self.ref.key)
 
     def poll_once(self) -> int:
-        api_url = THREAD_API_TEMPLATE.format(board=self.ref.board, thread_id=self.ref.thread_id)
+        api_url = THREAD_API_URL_TEMPLATE.format(board=self.ref.board, thread_id=self.ref.thread_id)
         payload = request_json(api_url)
         posts = payload.get("posts", [])
         media_items = collect_media_items(posts)
@@ -732,45 +780,12 @@ def extract_urls_from_input(line: str) -> list[str]:
     return [line.strip()] if line.strip() else []
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Watch one or more 4chan threads and download files to the Downloads folder."
-    )
-    parser.add_argument(
-        "--refresh-time",
-        type=float,
-        default=300.0,
-        help="Interval in seconds between checks for each thread.",
-    )
-    parser.add_argument(
-        "--throttle",
-        type=float,
-        default=0.5,
-        help="Pause in seconds between downloads from the same thread.",
-    )
-    parser.add_argument(
-        "--downloads-dir",
-        type=Path,
-        default=None,
-        help=(
-            "Optional base folder. Default: current user's Downloads folder, "
-            "or the script folder if Downloads does not exist."
-        ),
-    )
-    parser.add_argument(
-        "--no-color",
-        action="store_true",
-        help="Disable colored console output.",
-    )
-    return parser
-
-
 def process_input_line(line: str, manager: WatchManager) -> bool:
     if not line:
         return True
 
     lowered = line.lower()
-    if lowered in {"exit", "quit", "q"}:
+    if lowered in EXIT_INPUTS:
         return False
     for url in extract_urls_from_input(line):
         try:
@@ -820,22 +835,36 @@ def run_dashboard_input_loop(manager: WatchManager, ui: ConsoleUI) -> None:
 
 def run_prompt_input_loop(manager: WatchManager) -> None:
     while True:
-        line = input(colorize("Paste URL> ", "bold", "cyan")).strip()
+        try:
+            line = input(colorize(INPUT_PROMPT, "bold", "cyan")).strip()
+        except EOFError:
+            return
         if not process_input_line(line, manager):
             return
 
 
+def print_help() -> None:
+    print(f"{APP_TITLE} v{APP_VERSION}")
+    print("Run without arguments and paste 4chan thread URLs into the prompt.")
+    print("Runtime settings are edited inside 4chan_downloader.py in the CONFIGURATION section.")
+
+
 def main() -> int:
-    args = build_parser().parse_args()
-    configure_colors(args.no_color)
-    downloads_root = args.downloads_dir or get_default_output_folder()
+    if any(argument in {"-h", "--help", "help"} for argument in sys.argv[1:]):
+        print_help()
+        return 0
+
+    configure_colors()
+    downloads_root = get_default_output_folder()
     downloads_root.mkdir(parents=True, exist_ok=True)
 
-    ui = ConsoleUI(downloads_root=downloads_root, refresh_time=max(args.refresh_time, 1.0))
+    refresh_time = max(CHECK_INTERVAL_SECONDS, 1.0)
+    throttle = max(DOWNLOAD_THROTTLE_SECONDS, 0.0)
+    ui = ConsoleUI(downloads_root=downloads_root, refresh_time=refresh_time)
     manager = WatchManager(
         downloads_root=downloads_root,
-        refresh_time=max(args.refresh_time, 1.0),
-        throttle=max(args.throttle, 0.0),
+        refresh_time=refresh_time,
+        throttle=throttle,
         ui=ui,
     )
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6.0 - 2026-05-15
+
+- Moved runtime settings into a `CONFIGURATION` section at the top of `4chan_downloader.py`.
+- Removed command-line flags for refresh time, throttle, downloads folder, and color output.
+- Added `requirements.txt` for tooling clarity.
+- Documented script-based configuration tokens.
+
 ## 1.5.0 - 2026-05-15
 
 - Added a thread title line above each progress bar.
@@ -30,7 +37,7 @@
 ## 1.1.0 - 2026-05-15
 
 - Added colored console output for the header, prompt, status messages, warnings, and errors.
-- Added `--no-color` to force plain console output.
+- Added configurable plain console output.
 - Added colored prompt text.
 
 ## 1.0.0 - 2026-05-15
