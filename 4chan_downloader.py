@@ -177,7 +177,7 @@ class ConsoleUI:
         print(colorize("Interactive 4chan downloader", "bold", "green"))
         print(f"{colorize('Base folder:', 'cyan')} {self.downloads_root}")
         print(f"{colorize('Check interval:', 'cyan')} {int(self.refresh_time)} seconds")
-        print("Paste a thread URL and press Enter. Commands: list, exit")
+        print("Paste a thread URL and press Enter.")
 
     def render(self) -> None:
         if not self.dashboard_enabled:
@@ -201,7 +201,6 @@ class ConsoleUI:
             colorize("Interactive 4chan downloader", "bold", "green"),
             f"{colorize('Base folder:', 'cyan')} {self.downloads_root}",
             f"{colorize('Check interval:', 'cyan')} {int(self.refresh_time)} seconds",
-            f"{colorize('Commands:', 'cyan')} list, exit",
         ]
         if self.notice:
             notice_color = {
@@ -219,7 +218,7 @@ class ConsoleUI:
                 progress = self.statuses[key]
                 lines.append(self.format_thread_line(progress, width))
 
-        lines.extend(["", colorize("URL/command> ", "bold", "cyan") + self.input_buffer])
+        lines.extend(["", colorize("Paste URL> ", "bold", "cyan") + self.input_buffer])
         sys.stdout.write("\033[2J\033[H" + "\n".join(lines))
         sys.stdout.flush()
 
@@ -644,9 +643,6 @@ class WatchManager:
     def mark_stopped(self, key: str) -> None:
         self.ui.message(key, "watcher stopped", "stopped")
 
-    def list_threads(self) -> None:
-        self.ui.render()
-
     def stop_all(self) -> None:
         with self.lock:
             watchers = list(self.watchers.values())
@@ -656,7 +652,7 @@ class WatchManager:
             watcher.join(timeout=5)
 
 
-def extract_urls_or_command(line: str) -> list[str]:
+def extract_urls_from_input(line: str) -> list[str]:
     matches = re.findall(r"https?://\S+", line, flags=re.IGNORECASE)
     if matches:
         return matches
@@ -700,14 +696,10 @@ def process_input_line(line: str, manager: WatchManager) -> bool:
     if not line:
         return True
 
-    command = line.lower()
-    if command in {"exit", "quit", "q"}:
+    lowered = line.lower()
+    if lowered in {"exit", "quit", "q"}:
         return False
-    if command in {"list", "ls"}:
-        manager.list_threads()
-        return True
-
-    for url in extract_urls_or_command(line):
+    for url in extract_urls_from_input(line):
         try:
             manager.add(url)
         except ValueError as exc:
@@ -755,7 +747,7 @@ def run_dashboard_input_loop(manager: WatchManager, ui: ConsoleUI) -> None:
 
 def run_prompt_input_loop(manager: WatchManager) -> None:
     while True:
-        line = input(colorize("URL/command> ", "bold", "cyan")).strip()
+        line = input(colorize("Paste URL> ", "bold", "cyan")).strip()
         if not process_input_line(line, manager):
             return
 

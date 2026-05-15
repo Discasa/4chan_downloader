@@ -24,11 +24,11 @@ https://i.4cdn.org/{board}/{tim}{ext}
 2. The script detects the current user's Downloads folder.
 3. If the detected Downloads folder does not exist, the script uses its own
    folder as the output base.
-4. The prompt accepts URLs or commands.
+4. The prompt accepts thread URLs.
 5. Each valid URL creates a `ThreadWatcher` in a separate Python thread.
 6. The first check runs immediately.
 7. Later checks run every 300 seconds for each watcher.
-8. The `exit` command signals all watchers to stop.
+8. Ctrl+C signals all watchers to stop.
 
 ## Console Dashboard
 
@@ -42,8 +42,7 @@ file. Each watched thread gets one line with:
 
 On Windows, the script attempts to enable virtual terminal processing before
 redrawing the dashboard. If the terminal does not support ANSI control sequences,
-the script falls back to plain prompt output and the `list` command can be used
-to print a progress snapshot.
+the script falls back to plain prompt output.
 
 Color output is disabled when:
 

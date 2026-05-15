@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.0 - 2026-05-15
+
+- Removed the visible commands line from the console dashboard.
+- Removed `list` and `ls` handling.
+- Changed the input prompt to `Paste URL>`.
+
 ## 1.3.0 - 2026-05-15
 
 - Stopped writing `.downloaded.json` and `.thread_info.json` inside thread download folders.
@@ -18,7 +24,7 @@
 
 - Added colored console output for the header, prompt, status messages, warnings, and errors.
 - Added `--no-color` to force plain console output.
-- Changed the prompt text to `URL/command>`.
+- Added colored prompt text.
 
 ## 1.0.0 - 2026-05-15
 

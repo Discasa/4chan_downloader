@@ -51,12 +51,7 @@ The console keeps a compact dashboard instead of printing one line for every
 downloaded file. Each thread appears as one progress bar with a `downloaded/total`
 counter.
 
-Available commands:
-
-```text
-list
-exit
-```
+Press Ctrl+C to stop the script.
 
 ## Output Folder
 
