@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.0 - 2026-05-15
+
+- Added colored console output for the header, prompt, status messages, warnings, and errors.
+- Added `--no-color` to force plain console output.
+- Changed the prompt text to `URL/command>`.
+
 ## 1.0.0 - 2026-05-15
 
 - Created the single-file `4chan_downloader.py` script.

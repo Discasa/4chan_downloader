@@ -30,6 +30,19 @@ https://i.4cdn.org/{board}/{tim}{ext}
 7. Later checks run every 300 seconds for each watcher.
 8. The `exit` command signals all watchers to stop.
 
+## Console Colors
+
+The script uses ANSI colors for the header, prompt, status logs, warnings, and
+errors. On Windows, it attempts to enable virtual terminal processing before
+printing color codes. If the terminal does not support color, output falls back
+to plain text.
+
+Color output is disabled when:
+
+- The `NO_COLOR` environment variable is set.
+- Standard output is not an interactive terminal.
+- The user runs the script with `--no-color`.
+
 ## Folder Names
 
 The destination folder is created inside the configured downloads root. Folder

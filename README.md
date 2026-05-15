@@ -20,6 +20,7 @@ use.
 - Creates one folder per thread.
 - Preserves the original filenames returned by the 4chan API.
 - Tracks processed files to avoid repeated downloads.
+- Uses colored console output for prompts, status messages, warnings, and errors.
 
 ## Requirements
 
@@ -82,6 +83,7 @@ Main options:
 --refresh-time  Interval between checks, in seconds. Default: 300.
 --throttle      Pause between downloads from the same thread. Default: 0.5.
 --downloads-dir Alternate base folder for saved files.
+--no-color      Disable colored console output.
 ```
 
 Example with a custom output folder:

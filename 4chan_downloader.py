@@ -32,6 +32,26 @@ RESERVED_WINDOWS_NAMES = {
 }
 
 print_lock = threading.Lock()
+COLOR_ENABLED = False
+COLOR_CODES = {
+    "reset": "\033[0m",
+    "bold": "\033[1m",
+    "dim": "\033[2m",
+    "red": "\033[31m",
+    "green": "\033[32m",
+    "yellow": "\033[33m",
+    "blue": "\033[34m",
+    "magenta": "\033[35m",
+    "cyan": "\033[36m",
+    "gray": "\033[90m",
+}
+LOG_COLORS = {
+    "info": "cyan",
+    "success": "green",
+    "warning": "yellow",
+    "error": "red",
+    "muted": "gray",
+}
 
 
 @dataclass(frozen=True)
@@ -50,10 +70,56 @@ class RateLimited(Exception):
     pass
 
 
-def log(message: str) -> None:
+def enable_ansi_colors() -> bool:
+    if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
+        return False
+    if os.name != "nt":
+        return True
+
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)
+        mode = ctypes.c_uint()
+        if not handle or handle == -1:
+            return False
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        return bool(kernel32.SetConsoleMode(handle, mode.value | 0x0004))
+    except Exception:
+        return False
+
+
+def configure_colors(disabled: bool) -> None:
+    global COLOR_ENABLED
+    COLOR_ENABLED = False if disabled else enable_ansi_colors()
+
+
+def colorize(text: str, *styles: str) -> str:
+    if not COLOR_ENABLED:
+        return text
+    prefix = "".join(COLOR_CODES[style] for style in styles if style in COLOR_CODES)
+    if not prefix:
+        return text
+    return f"{prefix}{text}{COLOR_CODES['reset']}"
+
+
+def log(message: str, level: str = "info") -> None:
     with print_lock:
         stamp = datetime.now().strftime("%H:%M:%S")
-        print(f"\n[{stamp}] {message}", flush=True)
+        timestamp = colorize(f"[{stamp}]", "gray")
+        colored_message = colorize(message, LOG_COLORS.get(level, "cyan"))
+        print(f"\n{timestamp} {colored_message}", flush=True)
+
+
+def print_header(downloads_root: Path) -> None:
+    print(colorize("Interactive 4chan downloader", "bold", "green"))
+    print(f"{colorize('Base folder:', 'cyan')} {downloads_root}")
+    print(f"{colorize('Paste', 'yellow')} a thread URL and press Enter.")
+    print("While the script is open, paste new URLs to watch more threads.")
+    print("Each thread is checked immediately when added, then checked again every 5 minutes.")
+    print(f"{colorize('Commands:', 'cyan')} list, exit")
 
 
 def get_windows_downloads_folder() -> Path:
@@ -293,23 +359,23 @@ class ThreadWatcher:
                 new_count = self.poll_once()
                 backoff = 0.0
                 if new_count:
-                    log(f"{self.ref.key}: {new_count} new file(s).")
+                    log(f"{self.ref.key}: {new_count} new file(s).", "success")
             except urllib.error.HTTPError as exc:
                 if exc.code == 404:
-                    log(f"{self.ref.key}: thread unavailable or archived. Watcher stopped.")
+                    log(f"{self.ref.key}: thread unavailable or archived. Watcher stopped.", "warning")
                     break
                 if exc.code == 429:
                     backoff = min(backoff + 30.0, 300.0)
-                    log(f"{self.ref.key}: rate limited. Trying again in {int(backoff)}s.")
+                    log(f"{self.ref.key}: rate limited. Trying again in {int(backoff)}s.", "warning")
                 else:
-                    log(f"{self.ref.key}: HTTP {exc.code}. Trying again on the next cycle.")
+                    log(f"{self.ref.key}: HTTP {exc.code}. Trying again on the next cycle.", "warning")
             except RateLimited:
                 backoff = min(backoff + 30.0, 300.0)
-                log(f"{self.ref.key}: rate limited while downloading. Trying again in {int(backoff)}s.")
+                log(f"{self.ref.key}: rate limited while downloading. Trying again in {int(backoff)}s.", "warning")
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
-                log(f"{self.ref.key}: temporary failure ({exc}).")
+                log(f"{self.ref.key}: temporary failure ({exc}).", "warning")
             except Exception as exc:
-                log(f"{self.ref.key}: unexpected error ({exc}).")
+                log(f"{self.ref.key}: unexpected error ({exc}).", "error")
 
             wait_time = backoff or self.refresh_time
             self.stop_event.wait(wait_time)
@@ -333,7 +399,7 @@ class ThreadWatcher:
                     "source_url": self.ref.source_url,
                 },
             )
-            log(f"{self.ref.key}: saving to {self.directory}")
+            log(f"{self.ref.key}: saving to {self.directory}", "info")
 
         downloaded_path = self.directory / ".downloaded.json"
         downloaded = load_json_file(downloaded_path, {})
@@ -384,7 +450,7 @@ class ThreadWatcher:
             downloaded[post_key] = output_path.name
             save_json_file(downloaded_path, downloaded)
             new_count += 1
-            log(f"{self.ref.key}: downloaded {output_path.name}")
+            log(f"{self.ref.key}: downloaded {output_path.name}", "success")
             self.stop_event.wait(self.throttle)
 
         return new_count
@@ -404,13 +470,13 @@ class WatchManager:
         with self.lock:
             existing = self.watchers.get(ref.key)
             if existing and existing.worker.is_alive():
-                log(f"{ref.key}: already being watched.")
+                log(f"{ref.key}: already being watched.", "warning")
                 return
 
             watcher = ThreadWatcher(ref, self.downloads_root, self.refresh_time, self.throttle, self)
             self.watchers[ref.key] = watcher
             watcher.start()
-            log(f"{ref.key}: watcher started.")
+            log(f"{ref.key}: watcher started.", "success")
 
     def allocate_directory(self, ref: ThreadRef, folder_name: str) -> Path:
         base_name = sanitize_windows_name(folder_name, fallback=f"{ref.board}-{ref.thread_id}")
@@ -439,17 +505,18 @@ class WatchManager:
             watcher = self.watchers.get(key)
             if watcher and not watcher.worker.is_alive():
                 return
-        log(f"{key}: watcher stopped.")
+        log(f"{key}: watcher stopped.", "muted")
 
     def list_threads(self) -> None:
         with self.lock:
             if not self.watchers:
-                log("No threads are being watched.")
+                log("No threads are being watched.", "muted")
                 return
             for key, watcher in self.watchers.items():
                 status = "running" if watcher.worker.is_alive() else "stopped"
                 directory = watcher.directory or "(waiting for first check)"
-                log(f"{key}: {status} - {directory}")
+                level = "success" if watcher.worker.is_alive() else "muted"
+                log(f"{key}: {status} - {directory}", level)
 
     def stop_all(self) -> None:
         with self.lock:
@@ -492,11 +559,17 @@ def build_parser() -> argparse.ArgumentParser:
             "or the script folder if Downloads does not exist."
         ),
     )
+    parser.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Disable colored console output.",
+    )
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
+    configure_colors(args.no_color)
     downloads_root = args.downloads_dir or get_default_output_folder()
     downloads_root.mkdir(parents=True, exist_ok=True)
 
@@ -506,16 +579,11 @@ def main() -> int:
         throttle=max(args.throttle, 0.0),
     )
 
-    print("Interactive 4chan downloader")
-    print(f"Base folder: {downloads_root}")
-    print("Paste a thread URL and press Enter.")
-    print("While the script is open, paste new URLs to watch more threads.")
-    print("Each thread is checked immediately when added, then checked again every 5 minutes.")
-    print("Commands: list, exit")
+    print_header(downloads_root)
 
     try:
         while True:
-            line = input("URL/comando> ").strip()
+            line = input(colorize("URL/command> ", "bold", "cyan")).strip()
             if not line:
                 continue
 
@@ -530,11 +598,11 @@ def main() -> int:
                 try:
                     manager.add(url)
                 except ValueError as exc:
-                    log(f"URL ignored: {exc}")
+                    log(f"URL ignored: {exc}", "warning")
     except KeyboardInterrupt:
         print()
     finally:
-        log("Stopping watchers...")
+        log("Stopping watchers...", "muted")
         manager.stop_all()
 
     return 0
