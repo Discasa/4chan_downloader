@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.0 - 2026-05-15
+
+- Replaced per-file download log spam with a compact progress dashboard.
+- Added one progress bar per watched thread.
+- Added downloaded/total counters for each watched thread.
+- Kept URL entry available while the progress dashboard updates.
+
 ## 1.1.0 - 2026-05-15
 
 - Added colored console output for the header, prompt, status messages, warnings, and errors.

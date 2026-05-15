@@ -30,17 +30,24 @@ https://i.4cdn.org/{board}/{tim}{ext}
 7. Later checks run every 300 seconds for each watcher.
 8. The `exit` command signals all watchers to stop.
 
-## Console Colors
+## Console Dashboard
 
-The script uses ANSI colors for the header, prompt, status logs, warnings, and
-errors. On Windows, it attempts to enable virtual terminal processing before
-printing color codes. If the terminal does not support color, output falls back
-to plain text.
+The script uses a compact dashboard instead of printing one line per downloaded
+file. Each watched thread gets one line with:
+
+- Thread key, such as `gif/30633210`.
+- Progress bar.
+- Downloaded and total media count.
+- Current status.
+
+On Windows, the script attempts to enable virtual terminal processing before
+redrawing the dashboard. If the terminal does not support ANSI control sequences,
+the script falls back to plain prompt output and the `list` command can be used
+to print a progress snapshot.
 
 Color output is disabled when:
 
 - The `NO_COLOR` environment variable is set.
-- Standard output is not an interactive terminal.
 - The user runs the script with `--no-color`.
 
 ## Folder Names

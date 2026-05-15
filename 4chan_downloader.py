@@ -4,8 +4,10 @@ import html
 import json
 import os
 import re
+import shutil
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -31,7 +33,7 @@ RESERVED_WINDOWS_NAMES = {
     *(f"LPT{i}" for i in range(1, 10)),
 }
 
-print_lock = threading.Lock()
+ANSI_ENABLED = False
 COLOR_ENABLED = False
 COLOR_CODES = {
     "reset": "\033[0m",
@@ -44,13 +46,6 @@ COLOR_CODES = {
     "magenta": "\033[35m",
     "cyan": "\033[36m",
     "gray": "\033[90m",
-}
-LOG_COLORS = {
-    "info": "cyan",
-    "success": "green",
-    "warning": "yellow",
-    "error": "red",
-    "muted": "gray",
 }
 
 
@@ -70,8 +65,8 @@ class RateLimited(Exception):
     pass
 
 
-def enable_ansi_colors() -> bool:
-    if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
+def enable_ansi_console() -> bool:
+    if not sys.stdout.isatty():
         return False
     if os.name != "nt":
         return True
@@ -92,8 +87,9 @@ def enable_ansi_colors() -> bool:
 
 
 def configure_colors(disabled: bool) -> None:
-    global COLOR_ENABLED
-    COLOR_ENABLED = False if disabled else enable_ansi_colors()
+    global ANSI_ENABLED, COLOR_ENABLED
+    ANSI_ENABLED = enable_ansi_console()
+    COLOR_ENABLED = ANSI_ENABLED and not disabled and not os.environ.get("NO_COLOR")
 
 
 def colorize(text: str, *styles: str) -> str:
@@ -105,21 +101,146 @@ def colorize(text: str, *styles: str) -> str:
     return f"{prefix}{text}{COLOR_CODES['reset']}"
 
 
-def log(message: str, level: str = "info") -> None:
-    with print_lock:
-        stamp = datetime.now().strftime("%H:%M:%S")
-        timestamp = colorize(f"[{stamp}]", "gray")
-        colored_message = colorize(message, LOG_COLORS.get(level, "cyan"))
-        print(f"\n{timestamp} {colored_message}", flush=True)
+def progress_bar(done: int, total: int, width: int = 24) -> str:
+    if total <= 0:
+        filled = 0
+    else:
+        filled = int(width * min(done, total) / total)
+    return "[" + ("#" * filled).ljust(width, "-") + "]"
 
 
-def print_header(downloads_root: Path) -> None:
-    print(colorize("Interactive 4chan downloader", "bold", "green"))
-    print(f"{colorize('Base folder:', 'cyan')} {downloads_root}")
-    print(f"{colorize('Paste', 'yellow')} a thread URL and press Enter.")
-    print("While the script is open, paste new URLs to watch more threads.")
-    print("Each thread is checked immediately when added, then checked again every 5 minutes.")
-    print(f"{colorize('Commands:', 'cyan')} list, exit")
+def truncate_text(text: str, max_length: int) -> str:
+    if max_length <= 0:
+        return ""
+    if len(text) <= max_length:
+        return text
+    if max_length <= 3:
+        return text[:max_length]
+    return text[: max_length - 3] + "..."
+
+
+@dataclass
+class ThreadProgress:
+    key: str
+    status: str = "queued"
+    downloaded: int = 0
+    total: int = 0
+    new_files: int = 0
+    directory: str = ""
+    message: str = ""
+    updated_at: str = ""
+
+
+class ConsoleUI:
+    def __init__(self, downloads_root: Path, refresh_time: float) -> None:
+        self.downloads_root = downloads_root
+        self.refresh_time = refresh_time
+        self.statuses: dict[str, ThreadProgress] = {}
+        self.order: list[str] = []
+        self.input_buffer = ""
+        self.notice = ""
+        self.notice_status = "muted"
+        self.lock = threading.Lock()
+        self.dashboard_enabled = ANSI_ENABLED and sys.stdout.isatty() and os.name == "nt"
+
+    def set_input(self, value: str) -> None:
+        with self.lock:
+            self.input_buffer = value
+
+    def update_thread(self, key: str, **changes) -> None:
+        with self.lock:
+            status = self.statuses.get(key)
+            if status is None:
+                status = ThreadProgress(key=key)
+                self.statuses[key] = status
+                self.order.append(key)
+            for name, value in changes.items():
+                setattr(status, name, value)
+            status.updated_at = datetime.now().strftime("%H:%M:%S")
+            if self.dashboard_enabled:
+                self.render_locked()
+
+    def set_notice(self, message: str, status: str = "muted") -> None:
+        with self.lock:
+            self.notice = message
+            self.notice_status = status
+            if self.dashboard_enabled:
+                self.render_locked()
+
+    def print_header(self) -> None:
+        if self.dashboard_enabled:
+            with self.lock:
+                self.render_locked()
+            return
+
+        print(colorize("Interactive 4chan downloader", "bold", "green"))
+        print(f"{colorize('Base folder:', 'cyan')} {self.downloads_root}")
+        print(f"{colorize('Check interval:', 'cyan')} {int(self.refresh_time)} seconds")
+        print("Paste a thread URL and press Enter. Commands: list, exit")
+
+    def render(self) -> None:
+        if not self.dashboard_enabled:
+            self.print_snapshot()
+            return
+        with self.lock:
+            self.render_locked()
+
+    def print_snapshot(self) -> None:
+        with self.lock:
+            width = shutil.get_terminal_size((100, 30)).columns
+            if not self.order:
+                print("No threads are being watched.")
+                return
+            for key in self.order:
+                print(self.format_thread_line(self.statuses[key], width))
+
+    def render_locked(self) -> None:
+        width = shutil.get_terminal_size((100, 30)).columns
+        lines = [
+            colorize("Interactive 4chan downloader", "bold", "green"),
+            f"{colorize('Base folder:', 'cyan')} {self.downloads_root}",
+            f"{colorize('Check interval:', 'cyan')} {int(self.refresh_time)} seconds",
+            f"{colorize('Commands:', 'cyan')} list, exit",
+        ]
+        if self.notice:
+            notice_color = {
+                "error": "red",
+                "warning": "yellow",
+                "success": "green",
+            }.get(self.notice_status, "gray")
+            lines.append(colorize(self.notice, notice_color))
+        lines.extend(["", colorize("Threads", "bold", "cyan")])
+
+        if not self.order:
+            lines.append(colorize("No threads are being watched.", "gray"))
+        else:
+            for key in self.order:
+                progress = self.statuses[key]
+                lines.append(self.format_thread_line(progress, width))
+
+        lines.extend(["", colorize("URL/command> ", "bold", "cyan") + self.input_buffer])
+        sys.stdout.write("\033[2J\033[H" + "\n".join(lines))
+        sys.stdout.flush()
+
+    def format_thread_line(self, progress: ThreadProgress, width: int) -> str:
+        bar = progress_bar(progress.downloaded, progress.total)
+        count = f"{progress.downloaded}/{progress.total}" if progress.total else "0/0"
+        status_color = {
+            "downloading": "green",
+            "checking": "cyan",
+            "waiting": "yellow",
+            "queued": "yellow",
+            "stopped": "gray",
+            "error": "red",
+        }.get(progress.status, "cyan")
+        prefix = f"{progress.key:<16} {bar} {count:>9} "
+        detail = progress.message or progress.status
+        visible_budget = max(width - len(prefix), 20)
+        line = prefix + truncate_text(detail, visible_budget)
+        return colorize(line, status_color)
+
+    def message(self, key: str, text: str, status: str = "checking") -> None:
+        self.update_thread(key, status=status, message=text)
 
 
 def get_windows_downloads_folder() -> Path:
@@ -325,6 +446,20 @@ def choose_existing_or_unique_path(
     return unique
 
 
+def collect_media_items(posts: list[dict]) -> list[dict]:
+    seen = set()
+    media_items = []
+    for post in posts:
+        if "tim" not in post or "ext" not in post:
+            continue
+        key = f"{post['tim']}{post['ext']}"
+        if key in seen:
+            continue
+        seen.add(key)
+        media_items.append(post)
+    return media_items
+
+
 class ThreadWatcher:
     def __init__(
         self,
@@ -356,28 +491,41 @@ class ThreadWatcher:
         backoff = 0.0
         while not self.stop_event.is_set():
             try:
-                new_count = self.poll_once()
+                self.manager.ui.message(self.ref.key, "checking thread", "checking")
+                self.poll_once()
                 backoff = 0.0
-                if new_count:
-                    log(f"{self.ref.key}: {new_count} new file(s).", "success")
             except urllib.error.HTTPError as exc:
                 if exc.code == 404:
-                    log(f"{self.ref.key}: thread unavailable or archived. Watcher stopped.", "warning")
+                    self.manager.ui.message(self.ref.key, "thread unavailable or archived", "stopped")
                     break
                 if exc.code == 429:
                     backoff = min(backoff + 30.0, 300.0)
-                    log(f"{self.ref.key}: rate limited. Trying again in {int(backoff)}s.", "warning")
+                    self.manager.ui.message(
+                        self.ref.key,
+                        f"rate limited, retrying in {int(backoff)}s",
+                        "waiting",
+                    )
                 else:
-                    log(f"{self.ref.key}: HTTP {exc.code}. Trying again on the next cycle.", "warning")
+                    self.manager.ui.message(
+                        self.ref.key,
+                        f"HTTP {exc.code}, retrying on next cycle",
+                        "waiting",
+                    )
             except RateLimited:
                 backoff = min(backoff + 30.0, 300.0)
-                log(f"{self.ref.key}: rate limited while downloading. Trying again in {int(backoff)}s.", "warning")
+                self.manager.ui.message(
+                    self.ref.key,
+                    f"rate limited while downloading, retrying in {int(backoff)}s",
+                    "waiting",
+                )
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
-                log(f"{self.ref.key}: temporary failure ({exc}).", "warning")
+                self.manager.ui.message(self.ref.key, f"temporary failure: {exc}", "waiting")
             except Exception as exc:
-                log(f"{self.ref.key}: unexpected error ({exc}).", "error")
+                self.manager.ui.message(self.ref.key, f"unexpected error: {exc}", "error")
 
             wait_time = backoff or self.refresh_time
+            if not self.stop_event.is_set() and backoff == 0.0:
+                self.manager.ui.message(self.ref.key, f"waiting {int(wait_time)}s for next check", "waiting")
             self.stop_event.wait(wait_time)
 
         self.manager.mark_stopped(self.ref.key)
@@ -386,6 +534,8 @@ class ThreadWatcher:
         api_url = THREAD_API_TEMPLATE.format(board=self.ref.board, thread_id=self.ref.thread_id)
         payload = request_json(api_url)
         posts = payload.get("posts", [])
+        media_items = collect_media_items(posts)
+        total = len(media_items)
 
         if self.directory is None:
             folder_name = thread_title_from_posts(self.ref, posts)
@@ -399,7 +549,6 @@ class ThreadWatcher:
                     "source_url": self.ref.source_url,
                 },
             )
-            log(f"{self.ref.key}: saving to {self.directory}", "info")
 
         downloaded_path = self.directory / ".downloaded.json"
         downloaded = load_json_file(downloaded_path, {})
@@ -408,12 +557,21 @@ class ThreadWatcher:
 
         referer = f"https://boards.4chan.org/{self.ref.board}/thread/{self.ref.thread_id}"
         new_count = 0
+        media_keys = {f"{post['tim']}{post['ext']}" for post in media_items}
+        completed_count = len(media_keys.intersection(downloaded.keys()))
+        self.manager.ui.update_thread(
+            self.ref.key,
+            status="downloading",
+            downloaded=completed_count,
+            total=total,
+            new_files=0,
+            directory=str(self.directory),
+            message="checking files",
+        )
 
-        for post in posts:
+        for post in media_items:
             if self.stop_event.is_set():
                 break
-            if "tim" not in post or "ext" not in post:
-                continue
 
             tim = str(post["tim"])
             ext = str(post["ext"])
@@ -431,8 +589,27 @@ class ThreadWatcher:
             if output_path.exists():
                 downloaded[post_key] = output_path.name
                 save_json_file(downloaded_path, downloaded)
+                completed_count += 1
+                self.manager.ui.update_thread(
+                    self.ref.key,
+                    status="downloading",
+                    downloaded=completed_count,
+                    total=total,
+                    new_files=new_count,
+                    directory=str(self.directory),
+                    message="checking files",
+                )
                 continue
 
+            self.manager.ui.update_thread(
+                self.ref.key,
+                status="downloading",
+                downloaded=completed_count,
+                total=total,
+                new_files=new_count,
+                directory=str(self.directory),
+                message="downloading",
+            )
             media_url = MEDIA_URL_TEMPLATE.format(board=self.ref.board, tim=tim, ext=ext)
             data = request_bytes(media_url, referer=referer)
             temp_path = output_path.with_suffix(output_path.suffix + ".part")
@@ -450,17 +627,36 @@ class ThreadWatcher:
             downloaded[post_key] = output_path.name
             save_json_file(downloaded_path, downloaded)
             new_count += 1
-            log(f"{self.ref.key}: downloaded {output_path.name}", "success")
+            completed_count += 1
+            self.manager.ui.update_thread(
+                self.ref.key,
+                status="downloading",
+                downloaded=completed_count,
+                total=total,
+                new_files=new_count,
+                directory=str(self.directory),
+                message="downloading",
+            )
             self.stop_event.wait(self.throttle)
 
+        self.manager.ui.update_thread(
+            self.ref.key,
+            status="waiting",
+            downloaded=completed_count,
+            total=total,
+            new_files=new_count,
+            directory=str(self.directory),
+            message="check complete",
+        )
         return new_count
 
 
 class WatchManager:
-    def __init__(self, downloads_root: Path, refresh_time: float, throttle: float) -> None:
+    def __init__(self, downloads_root: Path, refresh_time: float, throttle: float, ui: ConsoleUI) -> None:
         self.downloads_root = downloads_root
         self.refresh_time = refresh_time
         self.throttle = throttle
+        self.ui = ui
         self.watchers: dict[str, ThreadWatcher] = {}
         self.directories: dict[str, str] = {}
         self.lock = threading.Lock()
@@ -470,13 +666,15 @@ class WatchManager:
         with self.lock:
             existing = self.watchers.get(ref.key)
             if existing and existing.worker.is_alive():
-                log(f"{ref.key}: already being watched.", "warning")
+                self.ui.message(ref.key, "already being watched", "waiting")
+                self.ui.set_notice(f"{ref.key} is already being watched.", "warning")
                 return
 
             watcher = ThreadWatcher(ref, self.downloads_root, self.refresh_time, self.throttle, self)
             self.watchers[ref.key] = watcher
+            self.ui.update_thread(ref.key, status="queued", message="queued")
             watcher.start()
-            log(f"{ref.key}: watcher started.", "success")
+            self.ui.set_notice(f"Watching {ref.key}.", "success")
 
     def allocate_directory(self, ref: ThreadRef, folder_name: str) -> Path:
         base_name = sanitize_windows_name(folder_name, fallback=f"{ref.board}-{ref.thread_id}")
@@ -501,22 +699,10 @@ class WatchManager:
             return candidate
 
     def mark_stopped(self, key: str) -> None:
-        with self.lock:
-            watcher = self.watchers.get(key)
-            if watcher and not watcher.worker.is_alive():
-                return
-        log(f"{key}: watcher stopped.", "muted")
+        self.ui.message(key, "watcher stopped", "stopped")
 
     def list_threads(self) -> None:
-        with self.lock:
-            if not self.watchers:
-                log("No threads are being watched.", "muted")
-                return
-            for key, watcher in self.watchers.items():
-                status = "running" if watcher.worker.is_alive() else "stopped"
-                directory = watcher.directory or "(waiting for first check)"
-                level = "success" if watcher.worker.is_alive() else "muted"
-                log(f"{key}: {status} - {directory}", level)
+        self.ui.render()
 
     def stop_all(self) -> None:
         with self.lock:
@@ -567,42 +753,95 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def process_input_line(line: str, manager: WatchManager) -> bool:
+    if not line:
+        return True
+
+    command = line.lower()
+    if command in {"exit", "quit", "q"}:
+        return False
+    if command in {"list", "ls"}:
+        manager.list_threads()
+        return True
+
+    for url in extract_urls_or_command(line):
+        try:
+            manager.add(url)
+        except ValueError as exc:
+            manager.ui.set_notice(f"URL ignored: {exc}", "warning")
+    return True
+
+
+def run_dashboard_input_loop(manager: WatchManager, ui: ConsoleUI) -> None:
+    if os.name != "nt":
+        run_prompt_input_loop(manager)
+        return
+
+    import msvcrt
+
+    buffer: list[str] = []
+    ui.render()
+    while True:
+        while msvcrt.kbhit():
+            char = msvcrt.getwch()
+            if char in {"\x00", "\xe0"}:
+                msvcrt.getwch()
+                continue
+            if char == "\x03":
+                raise KeyboardInterrupt
+            if char in {"\r", "\n"}:
+                line = "".join(buffer).strip()
+                buffer.clear()
+                ui.set_input("")
+                ui.render()
+                if not process_input_line(line, manager):
+                    return
+                continue
+            if char == "\b":
+                if buffer:
+                    buffer.pop()
+                    ui.set_input("".join(buffer))
+                    ui.render()
+                continue
+            if char >= " ":
+                buffer.append(char)
+                ui.set_input("".join(buffer))
+                ui.render()
+        time.sleep(0.05)
+
+
+def run_prompt_input_loop(manager: WatchManager) -> None:
+    while True:
+        line = input(colorize("URL/command> ", "bold", "cyan")).strip()
+        if not process_input_line(line, manager):
+            return
+
+
 def main() -> int:
     args = build_parser().parse_args()
     configure_colors(args.no_color)
     downloads_root = args.downloads_dir or get_default_output_folder()
     downloads_root.mkdir(parents=True, exist_ok=True)
 
+    ui = ConsoleUI(downloads_root=downloads_root, refresh_time=max(args.refresh_time, 1.0))
     manager = WatchManager(
         downloads_root=downloads_root,
         refresh_time=max(args.refresh_time, 1.0),
         throttle=max(args.throttle, 0.0),
+        ui=ui,
     )
 
-    print_header(downloads_root)
+    ui.print_header()
 
     try:
-        while True:
-            line = input(colorize("URL/command> ", "bold", "cyan")).strip()
-            if not line:
-                continue
-
-            command = line.lower()
-            if command in {"exit", "quit", "q"}:
-                break
-            if command in {"list", "ls"}:
-                manager.list_threads()
-                continue
-
-            for url in extract_urls_or_command(line):
-                try:
-                    manager.add(url)
-                except ValueError as exc:
-                    log(f"URL ignored: {exc}", "warning")
+        if ui.dashboard_enabled:
+            run_dashboard_input_loop(manager, ui)
+        else:
+            run_prompt_input_loop(manager)
     except KeyboardInterrupt:
         print()
     finally:
-        log("Stopping watchers...", "muted")
+        ui.update_thread("system", status="stopped", message="stopping watchers")
         manager.stop_all()
 
     return 0

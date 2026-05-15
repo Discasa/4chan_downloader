@@ -20,7 +20,8 @@ use.
 - Creates one folder per thread.
 - Preserves the original filenames returned by the 4chan API.
 - Tracks processed files to avoid repeated downloads.
-- Uses colored console output for prompts, status messages, warnings, and errors.
+- Shows a compact progress dashboard with one progress bar per thread.
+- Displays the downloaded and total file counts for each watched thread.
 
 ## Requirements
 
@@ -45,6 +46,10 @@ https://boards.4chan.org/wg/thread/123456789/example-thread
 ```
 
 While the script is open, paste more URLs to watch more threads.
+
+The console keeps a compact dashboard instead of printing one line for every
+downloaded file. Each thread appears as one progress bar with a `downloaded/total`
+counter.
 
 Available commands:
 
