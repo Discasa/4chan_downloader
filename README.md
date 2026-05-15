@@ -48,8 +48,14 @@ https://boards.4chan.org/wg/thread/123456789/example-thread
 While the script is open, paste more URLs to watch more threads.
 
 The console keeps a compact dashboard instead of printing one line for every
-downloaded file. Each thread appears as one progress bar with a `downloaded/total`
-counter.
+downloaded file. Each thread appears with its board/thread ID, readable thread
+name, progress bar, and `downloaded/total` counter:
+
+```text
+Threads
+gif/30633210  Example thread name
+  status: [########################]   184/184 | waiting 300s for next check
+```
 
 Press Ctrl+C to stop the script.
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.0 - 2026-05-15
+
+- Added a thread title line above each progress bar.
+- Changed progress rows to `status: [bar] downloaded/total | status text`.
+- Reduced console flicker by redrawing dashboard lines in place instead of clearing the full screen on every update.
+- Throttled dashboard refreshes during fast download loops.
+
 ## 1.4.0 - 2026-05-15
 
 - Removed the visible commands line from the console dashboard.

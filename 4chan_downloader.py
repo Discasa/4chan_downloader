@@ -123,6 +123,7 @@ def truncate_text(text: str, max_length: int) -> str:
 @dataclass
 class ThreadProgress:
     key: str
+    title: str = ""
     status: str = "queued"
     downloaded: int = 0
     total: int = 0
@@ -143,13 +144,20 @@ class ConsoleUI:
         self.notice_status = "muted"
         self.lock = threading.Lock()
         self.dashboard_enabled = ANSI_ENABLED and sys.stdout.isatty() and os.name == "nt"
+        self.rendered_line_count = 0
+        self.last_render_at = 0.0
+        self.min_render_interval = 0.15
+        self.has_rendered = False
 
     def set_input(self, value: str) -> None:
         with self.lock:
             self.input_buffer = value
+            if self.dashboard_enabled:
+                self.render_locked(force=True)
 
     def update_thread(self, key: str, **changes) -> None:
         with self.lock:
+            force_render = bool(changes.pop("_force_render", False))
             status = self.statuses.get(key)
             if status is None:
                 status = ThreadProgress(key=key)
@@ -159,19 +167,19 @@ class ConsoleUI:
                 setattr(status, name, value)
             status.updated_at = datetime.now().strftime("%H:%M:%S")
             if self.dashboard_enabled:
-                self.render_locked()
+                self.render_locked(force=force_render or status.status in {"waiting", "stopped", "error"})
 
     def set_notice(self, message: str, status: str = "muted") -> None:
         with self.lock:
             self.notice = message
             self.notice_status = status
             if self.dashboard_enabled:
-                self.render_locked()
+                self.render_locked(force=True)
 
     def print_header(self) -> None:
         if self.dashboard_enabled:
             with self.lock:
-                self.render_locked()
+                self.render_locked(force=True)
             return
 
         print(colorize("Interactive 4chan downloader", "bold", "green"))
@@ -193,9 +201,15 @@ class ConsoleUI:
                 print("No threads are being watched.")
                 return
             for key in self.order:
-                print(self.format_thread_line(self.statuses[key], width))
+                for line in self.format_thread_lines(self.statuses[key], width):
+                    print(line)
 
-    def render_locked(self) -> None:
+    def render_locked(self, force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and now - self.last_render_at < self.min_render_interval:
+            return
+        self.last_render_at = now
+
         width = shutil.get_terminal_size((100, 30)).columns
         lines = [
             colorize("Interactive 4chan downloader", "bold", "green"),
@@ -216,13 +230,23 @@ class ConsoleUI:
         else:
             for key in self.order:
                 progress = self.statuses[key]
-                lines.append(self.format_thread_line(progress, width))
+                lines.extend(self.format_thread_lines(progress, width))
 
         lines.extend(["", colorize("Paste URL> ", "bold", "cyan") + self.input_buffer])
-        sys.stdout.write("\033[2J\033[H" + "\n".join(lines))
+        clear_lines = max(self.rendered_line_count, len(lines))
+        output = ["\033[H"] if self.has_rendered else ["\033[2J\033[H"]
+        for index in range(clear_lines):
+            line = lines[index] if index < len(lines) else ""
+            output.append(line)
+            output.append("\033[K")
+            if index < clear_lines - 1:
+                output.append("\n")
+        sys.stdout.write("".join(output))
         sys.stdout.flush()
+        self.rendered_line_count = len(lines)
+        self.has_rendered = True
 
-    def format_thread_line(self, progress: ThreadProgress, width: int) -> str:
+    def format_thread_lines(self, progress: ThreadProgress, width: int) -> list[str]:
         bar = progress_bar(progress.downloaded, progress.total)
         count = f"{progress.downloaded}/{progress.total}" if progress.total else "0/0"
         status_color = {
@@ -233,11 +257,19 @@ class ConsoleUI:
             "stopped": "gray",
             "error": "red",
         }.get(progress.status, "cyan")
-        prefix = f"{progress.key:<16} {bar} {count:>9} "
+        title = progress.title or progress.key
+        header_prefix = f"{progress.key}  "
+        header_budget = max(width - len(header_prefix), 10)
+        header = colorize(progress.key, "cyan") + "  " + colorize(
+            truncate_text(title, header_budget),
+            "bold",
+        )
+
         detail = progress.message or progress.status
-        visible_budget = max(width - len(prefix), 20)
-        line = prefix + truncate_text(detail, visible_budget)
-        return colorize(line, status_color)
+        prefix = f"  status: {bar} {count:>9} | "
+        detail_budget = max(width - len(prefix), 10)
+        status_line = prefix + truncate_text(detail, detail_budget)
+        return [header, colorize(status_line, status_color)]
 
     def message(self, key: str, text: str, status: str = "checking") -> None:
         self.update_thread(key, status=status, message=text)
@@ -280,6 +312,14 @@ def strip_html(value: str) -> str:
     value = re.sub(r"<[^>]+>", " ", value)
     value = html.unescape(value)
     return re.sub(r"\s+", " ", value).strip()
+
+
+def clean_display_title(value: str, fallback: str) -> str:
+    value = urllib.parse.unquote(value or "")
+    value = html.unescape(value)
+    value = re.sub(r"[\x00-\x1f]+", " ", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value or fallback
 
 
 def sanitize_windows_name(value: str, fallback: str, max_length: int = 140) -> str:
@@ -401,6 +441,27 @@ def thread_title_from_posts(ref: ThreadRef, posts: list[dict]) -> str:
     return sanitize_windows_name(f"{ref.board}-{ref.thread_id}", fallback=f"{ref.board}-{ref.thread_id}")
 
 
+def display_thread_title_from_posts(ref: ThreadRef, posts: list[dict]) -> str:
+    fallback = ref.slug.replace("-", " ") if ref.slug else f"{ref.board}/{ref.thread_id}"
+
+    if posts:
+        opening_post = posts[0]
+        subject = opening_post.get("sub")
+        comment = opening_post.get("com")
+        if subject:
+            return clean_display_title(str(subject), fallback=fallback)
+        if comment:
+            return clean_display_title(strip_html(str(comment)), fallback=fallback)
+
+    return clean_display_title(fallback, fallback=f"{ref.board}/{ref.thread_id}")
+
+
+def display_thread_title_from_ref(ref: ThreadRef) -> str:
+    if ref.slug:
+        return clean_display_title(ref.slug.replace("-", " "), fallback=ref.key)
+    return ref.key
+
+
 def remove_legacy_metadata_files(directory: Path) -> None:
     for file_name in LEGACY_METADATA_FILES:
         path = directory / file_name
@@ -507,12 +568,14 @@ class ThreadWatcher:
             self.directory = self.manager.allocate_directory(self.ref, folder_name)
             self.directory.mkdir(parents=True, exist_ok=True)
             remove_legacy_metadata_files(self.directory)
+        title = display_thread_title_from_posts(self.ref, posts)
 
         referer = f"https://boards.4chan.org/{self.ref.board}/thread/{self.ref.thread_id}"
         new_count = 0
         completed_count = 0
         self.manager.ui.update_thread(
             self.ref.key,
+            title=title,
             status="downloading",
             downloaded=completed_count,
             total=total,
@@ -536,6 +599,7 @@ class ThreadWatcher:
                 completed_count += 1
                 self.manager.ui.update_thread(
                     self.ref.key,
+                    title=title,
                     status="downloading",
                     downloaded=completed_count,
                     total=total,
@@ -547,6 +611,7 @@ class ThreadWatcher:
 
             self.manager.ui.update_thread(
                 self.ref.key,
+                title=title,
                 status="downloading",
                 downloaded=completed_count,
                 total=total,
@@ -572,6 +637,7 @@ class ThreadWatcher:
             completed_count += 1
             self.manager.ui.update_thread(
                 self.ref.key,
+                title=title,
                 status="downloading",
                 downloaded=completed_count,
                 total=total,
@@ -583,6 +649,7 @@ class ThreadWatcher:
 
         self.manager.ui.update_thread(
             self.ref.key,
+            title=title,
             status="waiting",
             downloaded=completed_count,
             total=total,
@@ -614,7 +681,13 @@ class WatchManager:
 
             watcher = ThreadWatcher(ref, self.downloads_root, self.refresh_time, self.throttle, self)
             self.watchers[ref.key] = watcher
-            self.ui.update_thread(ref.key, status="queued", message="queued")
+            self.ui.update_thread(
+                ref.key,
+                title=display_thread_title_from_ref(ref),
+                status="queued",
+                message="queued",
+                _force_render=True,
+            )
             watcher.start()
             self.ui.set_notice(f"Watching {ref.key}.", "success")
 

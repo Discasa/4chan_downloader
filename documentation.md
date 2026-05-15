@@ -33,9 +33,10 @@ https://i.4cdn.org/{board}/{tim}{ext}
 ## Console Dashboard
 
 The script uses a compact dashboard instead of printing one line per downloaded
-file. Each watched thread gets one line with:
+file. Each watched thread gets two lines:
 
 - Thread key, such as `gif/30633210`.
+- Readable thread title from the thread subject, opening post, or URL slug.
 - Progress bar.
 - Downloaded and total media count.
 - Current status.
@@ -43,6 +44,10 @@ file. Each watched thread gets one line with:
 On Windows, the script attempts to enable virtual terminal processing before
 redrawing the dashboard. If the terminal does not support ANSI control sequences,
 the script falls back to plain prompt output.
+
+To avoid flicker while downloads are active, the dashboard does not clear the
+entire screen on every progress update. It redraws the existing dashboard lines
+in place and throttles progress refreshes during fast download loops.
 
 Color output is disabled when:
 
