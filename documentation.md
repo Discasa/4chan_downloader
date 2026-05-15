@@ -74,17 +74,16 @@ final name only after the file has been fully written.
 
 ## Local State
 
-Each thread folder receives:
+Thread folders do not receive metadata files. They are kept for downloaded media
+only. The script does not write state to AppData.
 
-```text
-.downloaded.json
-.thread_info.json
-```
+On a later run, the watcher computes the expected output filename from the API
+`filename` and `ext` values. If that filename already exists in the thread
+folder, the media item is treated as already downloaded and skipped. Only missing
+filenames are downloaded.
 
-`.downloaded.json` maps the `{tim}{ext}` key to the saved filename. This avoids
-downloading a media item again after it has already been processed.
-
-`.thread_info.json` stores the board, thread ID, and normalized thread URL.
+Older `.downloaded.json` and `.thread_info.json` files created in thread folders
+by previous versions are deleted when the same thread folder is opened again.
 
 ## Error Handling
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.0 - 2026-05-15
+
+- Stopped writing `.downloaded.json` and `.thread_info.json` inside thread download folders.
+- Avoided AppData state files; no persistent JSON is written by the script.
+- Added disk-based detection by original filename for existing downloads.
+- Added cleanup for legacy metadata files in thread folders when those folders are opened again.
+
 ## 1.2.0 - 2026-05-15
 
 - Replaced per-file download log spam with a compact progress dashboard.

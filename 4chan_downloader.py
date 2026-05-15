@@ -24,6 +24,7 @@ USER_AGENT = (
 THREAD_API_TEMPLATE = "https://a.4cdn.org/{board}/thread/{thread_id}.json"
 MEDIA_URL_TEMPLATE = "https://i.4cdn.org/{board}/{tim}{ext}"
 INVALID_WINDOWS_CHARS = r'<>:"/\|?*'
+LEGACY_METADATA_FILES = (".downloaded.json", ".thread_info.json")
 RESERVED_WINDOWS_NAMES = {
     "CON",
     "PRN",
@@ -384,24 +385,6 @@ def request_bytes(url: str, referer: str) -> bytes:
         raise
 
 
-def load_json_file(path: Path, default):
-    if not path.exists():
-        return default
-    try:
-        with path.open("r", encoding="utf-8") as file:
-            return json.load(file)
-    except (OSError, json.JSONDecodeError):
-        return default
-
-
-def save_json_file(path: Path, data) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    with temp_path.open("w", encoding="utf-8") as file:
-        json.dump(data, file, ensure_ascii=False, indent=2, sort_keys=True)
-    temp_path.replace(path)
-
-
 def thread_title_from_posts(ref: ThreadRef, posts: list[dict]) -> str:
     if ref.slug:
         return sanitize_windows_name(ref.slug.replace("-", " "), fallback=f"{ref.board}-{ref.thread_id}")
@@ -419,31 +402,14 @@ def thread_title_from_posts(ref: ThreadRef, posts: list[dict]) -> str:
     return sanitize_windows_name(f"{ref.board}-{ref.thread_id}", fallback=f"{ref.board}-{ref.thread_id}")
 
 
-def choose_existing_or_unique_path(
-    directory: Path,
-    file_name: str,
-    post_key: str,
-    expected_size: int | None,
-) -> Path:
-    candidate = directory / file_name
-    if not candidate.exists():
-        return candidate
-
-    if expected_size is not None:
+def remove_legacy_metadata_files(directory: Path) -> None:
+    for file_name in LEGACY_METADATA_FILES:
+        path = directory / file_name
         try:
-            if candidate.stat().st_size == expected_size:
-                return candidate
+            if path.is_file():
+                path.unlink()
         except OSError:
             pass
-
-    stem = candidate.stem
-    suffix = candidate.suffix
-    unique = directory / f"{stem} ({post_key}){suffix}"
-    counter = 2
-    while unique.exists():
-        unique = directory / f"{stem} ({post_key}-{counter}){suffix}"
-        counter += 1
-    return unique
 
 
 def collect_media_items(posts: list[dict]) -> list[dict]:
@@ -541,24 +507,11 @@ class ThreadWatcher:
             folder_name = thread_title_from_posts(self.ref, posts)
             self.directory = self.manager.allocate_directory(self.ref, folder_name)
             self.directory.mkdir(parents=True, exist_ok=True)
-            save_json_file(
-                self.directory / ".thread_info.json",
-                {
-                    "board": self.ref.board,
-                    "thread_id": self.ref.thread_id,
-                    "source_url": self.ref.source_url,
-                },
-            )
-
-        downloaded_path = self.directory / ".downloaded.json"
-        downloaded = load_json_file(downloaded_path, {})
-        if not isinstance(downloaded, dict):
-            downloaded = {}
+            remove_legacy_metadata_files(self.directory)
 
         referer = f"https://boards.4chan.org/{self.ref.board}/thread/{self.ref.thread_id}"
         new_count = 0
-        media_keys = {f"{post['tim']}{post['ext']}" for post in media_items}
-        completed_count = len(media_keys.intersection(downloaded.keys()))
+        completed_count = 0
         self.manager.ui.update_thread(
             self.ref.key,
             status="downloading",
@@ -576,19 +529,11 @@ class ThreadWatcher:
             tim = str(post["tim"])
             ext = str(post["ext"])
             post_key = f"{tim}{ext}"
-            if post_key in downloaded:
-                continue
 
             original_stem = str(post.get("filename") or tim)
             output_name = sanitize_file_name(original_stem, ext, fallback=tim)
-            expected_size = post.get("fsize")
-            if not isinstance(expected_size, int):
-                expected_size = None
-
-            output_path = choose_existing_or_unique_path(self.directory, output_name, post_key, expected_size)
+            output_path = self.directory / output_name
             if output_path.exists():
-                downloaded[post_key] = output_path.name
-                save_json_file(downloaded_path, downloaded)
                 completed_count += 1
                 self.manager.ui.update_thread(
                     self.ref.key,
@@ -624,8 +569,6 @@ class ThreadWatcher:
                     except OSError:
                         pass
 
-            downloaded[post_key] = output_path.name
-            save_json_file(downloaded_path, downloaded)
             new_count += 1
             completed_count += 1
             self.manager.ui.update_thread(

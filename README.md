@@ -19,7 +19,7 @@ use.
 - Falls back to the script folder if the default Downloads folder does not exist.
 - Creates one folder per thread.
 - Preserves the original filenames returned by the 4chan API.
-- Tracks processed files to avoid repeated downloads.
+- Detects existing files by name so reopened threads only download new files.
 - Shows a compact progress dashboard with one progress bar per thread.
 - Displays the downloaded and total file counts for each watched thread.
 
@@ -97,17 +97,18 @@ Example with a custom output folder:
 python .\4chan_downloader.py --downloads-dir "D:\4chan"
 ```
 
-## Control Files
+## State Tracking
 
-Inside each thread folder, the script creates:
+Thread download folders are kept clean. The script does not create JSON files
+inside those folders, and it does not keep state in AppData.
 
-```text
-.downloaded.json
-.thread_info.json
-```
+When a thread is opened again on another day, the script computes the expected
+original filename for each media item. If that filename already exists in the
+thread folder, the item is counted as already downloaded and skipped. Only
+missing filenames are downloaded.
 
-These files store which media items have already been processed and basic thread
-metadata. They live next to the downloaded files, not inside this repository.
+Older `.downloaded.json` and `.thread_info.json` files created by previous
+versions are removed from a thread folder when that thread is opened again.
 
 ## Notice
 
